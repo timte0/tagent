@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "node --env-file=.env ./node_modules/.bin/tsx prisma/seed.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",
