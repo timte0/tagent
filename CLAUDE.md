@@ -607,3 +607,25 @@ Work in this order. Do not skip phases.
 11. Usage warnings (80% alert email + in-app)
 12. Log cleanup cron (90-day retention)
 13. Nginx + HTTPS on the VPS (reverse proxy in front of Next.js on port 3000, Let's Encrypt TLS, then set `COOKIE_SECURE=true` in `.env`)
+
+---
+
+## 16. Current state (as of 2026-03-21)
+
+### What is done
+- Phases 1–5 are fully implemented and deployed on the VPS.
+- The app is running via PM2 (`pm2 list` → `tagent`, online) on `http://51.254.139.70:3000`.
+- OpenClaw is running on the same VPS, listening on `127.0.0.1:18789`.
+- The connection from the app to OpenClaw is confirmed working.
+- Login works with `admin@tagent.local` / `changeme_admin_123!`.
+
+### VPS environment notes
+- `OPENCLAW_URL=http://127.0.0.1:18789` — OpenClaw only listens on localhost, not the public IP.
+- `NEXT_PUBLIC_APP_URL=http://127.0.0.1:3000` — used by OpenClaw to POST callbacks back to the app.
+- `COOKIE_SECURE` is not set (left unset = false) because the app is still on HTTP. Set to `true` once HTTPS is in place.
+
+### Next steps
+1. **End-to-end agent test** — log in, create a job (paste a job description as URL or upload PDF), click Run Agent, watch the sidebar for live steps and plan approval.
+2. **Phase 6** — Plan approval UI and resume call (partially in place via the sidebar, verify the full round-trip works).
+3. **Phase 7** — Integrations page (LinkedIn/HelloWork credential save + connection test).
+4. Long term: set up Nginx + HTTPS (phase 13) before any real users.
