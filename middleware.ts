@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
-import { Role } from "@/app/generated/prisma/client";
+
+// Defined locally to avoid importing the Prisma client in Edge Runtime
+type Role = "ADMIN" | "MANAGER" | "USER";
 
 const secret = new TextEncoder().encode(process.env.JWT_SECRET!);
 
@@ -38,7 +40,7 @@ export async function middleware(req: NextRequest) {
         ? NextResponse.json({ error: "Unauthorized" }, { status: 401 })
         : NextResponse.redirect(new URL("/login", req.url));
     }
-    if (user.role !== Role.ADMIN) {
+    if (user.role !== "ADMIN") {
       return pathname.startsWith("/api/")
         ? NextResponse.json({ error: "Forbidden" }, { status: 403 })
         : NextResponse.redirect(new URL("/dashboard", req.url));
