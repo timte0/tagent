@@ -1,0 +1,174 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  MANAGER
+  USER
+}
+
+enum Tier {
+  STARTER
+  GROWTH
+  SCALE
+}
+
+enum SourceType {
+  PDF
+  URL
+}
+
+enum RunStatus {
+  PENDING
+  RUNNING
+  PAUSED_FOR_APPROVAL
+  COMPLETED
+  FAILED
+}
+
+enum StepType {
+  PLAN_APPROVAL
+  TOOL_COMPLETE
+  COMPLETED
+  ERROR
+}
+
+enum AuthType {
+  API_TOKEN
+  USER_CREDENTIALS
+  DEVELOPER_ONLY
+}
+
+enum TransactionType {
+  MEMBERSHIP
+  TOPUP
+  USAGE
+  MANUAL_ADMIN
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model User {
+  id           String            @id @default(cuid())
+  email        String            @unique
+  passwordHash String
+  role         Role              @default(USER)
+  orgId        String?
+  org          Org?              @relation(fields: [orgId], references: [id])
+  isActive     Boolean           @default(true)
+  createdAt    DateTime          @default(now())
+  runs         AgentRun[]
+  jobs         Job[]
+  credentials  ToolCredential[]
+}
+
+model Org {
+  id                   String               @id @default(cuid())
+  name                 String
+  tier                 Tier                 @default(STARTER)
+  monthlyAllowanceUsd  Float                @default(80)
+  additionalCreditsUsd Float                @default(0)
+  billingCycleStart    DateTime             @default(now())
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  users                User[]
+  jobs                 Job[]
+  runs                 AgentRun[]
+  orgTools             OrgTool[]
+  transactions         CreditTransaction[]
+}
+
+model Job {
+  id         String     @id @default(cuid())
+  orgId      String
+  org        Org        @relation(fields: [orgId], references: [id])
+  userId     String
+  user       User       @relation(fields: [userId], references: [id])
+  title      String?
+  sourceType SourceType
+  rawContent String     @db.Text
+  sourceUrl  String?
+  createdAt  DateTime   @default(now())
+  runs       AgentRun[]
+}
+
+model AgentRun {
+  id             String    @id @default(cuid())
+  jobId          String
+  job            Job       @relation(fields: [jobId], references: [id])
+  userId         String
+  user           User      @relation(fields: [userId], references: [id])
+  orgId          String
+  org            Org       @relation(fields: [orgId], references: [id])
+  status         RunStatus @default(PENDING)
+  sessionKey     String    @unique
+  planText       String?   @db.Text
+  startedAt      DateTime  @default(now())
+  endedAt        DateTime?
+  usageCostUsd   Float     @default(0)
+  usageBilledUsd Float     @default(0)
+  results        Json?
+  steps          RunStep[]
+}
+
+model RunStep {
+  id        String   @id @default(cuid())
+  runId     String
+  run       AgentRun @relation(fields: [runId], references: [id])
+  type      StepType
+  content   Json
+  createdAt DateTime @default(now())
+}
+
+model Tool {
+  id                String           @id @default(cuid())
+  name              String           @unique
+  slug              String           @unique
+  authType          AuthType
+  isGloballyEnabled Boolean          @default(false)
+  orgTools          OrgTool[]
+  credentials       ToolCredential[]
+}
+
+model OrgTool {
+  orgId     String
+  org       Org     @relation(fields: [orgId], references: [id])
+  toolId    String
+  tool      Tool    @relation(fields: [toolId], references: [id])
+  isEnabled Boolean @default(false)
+
+  @@id([orgId, toolId])
+}
+
+model ToolCredential {
+  id                   String   @id @default(cuid())
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id])
+  toolId               String
+  tool                 Tool     @relation(fields: [toolId], references: [id])
+  encryptedCredentials String   @db.Text
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+
+  @@unique([userId, toolId])
+}
+
+model CreditTransaction {
+  id        String          @id @default(cuid())
+  orgId     String
+  org       Org             @relation(fields: [orgId], references: [id])
+  type      TransactionType
+  amountUsd Float
+  note      String?
+  createdBy String?
+  createdAt DateTime        @default(now())
+}
