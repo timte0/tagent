@@ -606,3 +606,4 @@ Work in this order. Do not skip phases.
 10. CSV export
 11. Usage warnings (80% alert email + in-app)
 12. Log cleanup cron (90-day retention)
+13. Nginx + HTTPS on the VPS (reverse proxy in front of Next.js on port 3000, Let's Encrypt TLS, then set `COOKIE_SECURE=true` in `.env`)
