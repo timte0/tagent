@@ -49,7 +49,8 @@ export async function POST(req: NextRequest) {
       const result = await parser.getText();
       await parser.destroy();
       rawContent = result.text?.trim() ?? "";
-    } catch {
+    } catch (err) {
+      console.error("[pdf-parse error]", err);
       return NextResponse.json(
         { error: "Failed to extract text from PDF" },
         { status: 422 },
