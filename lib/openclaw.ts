@@ -57,7 +57,7 @@ function ensureConnected(): Promise<WebSocket> {
           id: connectId,
           method: "connect",
           params: {
-            minProtocol: 3,
+            minProtocol: 2,
             maxProtocol: 3,
             client: {
               id: "tagent-backend",
@@ -85,6 +85,7 @@ function ensureConnected(): Promise<WebSocket> {
             socket!.on("message", handleMessage);
             resolve();
           } else {
+            console.error("[openclaw] connect handshake rejected:", JSON.stringify(msg));
             const err = new Error("OpenClaw connect handshake failed");
             socket = null;
             socketPromise = null;
