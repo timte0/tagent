@@ -59,6 +59,9 @@ function ensureConnected(): Promise<WebSocket> {
           params: {
             minProtocol: 2,
             maxProtocol: 3,
+            auth: {
+              token: process.env.OPENCLAW_HOOKS_TOKEN,
+            },
             client: {
               id: "openclaw-macos",
               displayName: "macos",
