@@ -62,6 +62,7 @@ function ensureConnected(): Promise<WebSocket> {
             auth: {
               token: process.env.OPENCLAW_GATEWAY_TOKEN,
             },
+            scopes: ["operator.read", "operator.write"],
             client: {
               id: "openclaw-macos",
               displayName: "macos",
