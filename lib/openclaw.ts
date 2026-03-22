@@ -60,11 +60,12 @@ function ensureConnected(): Promise<WebSocket> {
             minProtocol: 2,
             maxProtocol: 3,
             client: {
-              id: "tagent-backend",
-              displayName: "Tagent Backend",
+              id: "openclaw-macos",
+              displayName: "macos",
               version: "1.0.0",
               platform: "node",
-              mode: "cli",
+              mode: "ui",
+              instanceId: "A1B2",
             },
           },
         })
