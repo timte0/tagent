@@ -40,7 +40,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Missing runId or type" }, { status: 400 });
   }
 
-  const run = await prisma.agentRun.findUnique({ where: { id: runId } });
+  const run = await prisma.agentRun.findUnique({ where: { sessionKey: runId } });
   if (!run) {
     return NextResponse.json({ error: "Run not found" }, { status: 404 });
   }
