@@ -64,7 +64,7 @@ function ensureConnected(): Promise<WebSocket> {
             },
             scopes: ["operator.read", "operator.write"],
             client: {
-              id: "your-app-backend",
+              id: "openclaw-macos",
               displayName: "Tagent Backend",
               version: "1.0.0",
               platform: "node",
