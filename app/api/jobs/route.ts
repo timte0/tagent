@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
 
     let rawContent: string;
     try {
+      PDFParse.setWorker(""); // disable web worker in Node.js / Next.js server
       const parser = new PDFParse({ data: buffer });
       const result = await parser.getText();
       await parser.destroy();
