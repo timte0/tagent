@@ -29,6 +29,42 @@ async function main() {
     console.log(`✓ ADMIN user already exists: ${adminEmail}`);
   }
 
+  // ── Demo org + MANAGER user ──────────────────────────────────────────────────
+  const managerEmail = "manager@tagent.local";
+  const managerPassword = "changeme_manager_123!";
+
+  let demoOrg = await prisma.org.findFirst({ where: { name: "Demo Org" } });
+  if (!demoOrg) {
+    demoOrg = await prisma.org.create({
+      data: {
+        name: "Demo Org",
+        tier: "STARTER",
+        monthlyAllowanceUsd: 80,
+        additionalCreditsUsd: 0,
+      },
+    });
+    console.log(`✓ Created org: ${demoOrg.name}`);
+  } else {
+    console.log(`✓ Org already exists: ${demoOrg.name}`);
+  }
+
+  const existingManager = await prisma.user.findUnique({ where: { email: managerEmail } });
+  if (!existingManager) {
+    const passwordHash = await bcrypt.hash(managerPassword, 12);
+    await prisma.user.create({
+      data: {
+        email: managerEmail,
+        passwordHash,
+        role: Role.MANAGER,
+        orgId: demoOrg.id,
+        isActive: true,
+      },
+    });
+    console.log(`✓ Created MANAGER user: ${managerEmail} / ${managerPassword}`);
+  } else {
+    console.log(`✓ MANAGER user already exists: ${managerEmail}`);
+  }
+
   // ── LinkedIn tool ────────────────────────────────────────────────────────────
   const linkedin = await prisma.tool.upsert({
     where: { slug: "linkedin" },
