@@ -111,6 +111,8 @@ function makeEventHandler(runId: string, orgId: string) {
   let planPublished = false;
 
   return async function handleEvent(event: AgentEvent) {
+    // TEMP: log every event to diagnose plan approval flow
+    console.log("[openclaw event]", JSON.stringify({ stream: event.stream, data: event.data }));
     try {
       if (event.stream === "lifecycle") {
         const phase = event.data.phase as string | undefined;
