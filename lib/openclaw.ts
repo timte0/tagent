@@ -91,6 +91,7 @@ const pending = new Map<
 
 const runIdToSession = new Map<string, string>();
 const sessionHandlers = new Map<string, (event: AgentEvent) => void>();
+const sessionToOpenclawRunId = new Map<string, string>();
 
 let socket: WebSocket | null = null;
 let socketReady = false;
@@ -293,6 +294,7 @@ export async function triggerAgentRun({
 
   runIdToSession.set(result.runId, sessionKey);
   sessionHandlers.set(sessionKey, onEvent);
+  sessionToOpenclawRunId.set(sessionKey, result.runId);
 
   return result.runId;
 }
@@ -308,12 +310,17 @@ export async function resumeAgentRun({
 }): Promise<string> {
   const idempotencyKey = `${sessionKey}:resume:${Date.now()}`;
 
-  const wsSessionKey = `run:${sessionKey}`;
+  const openclawRunId = sessionToOpenclawRunId.get(sessionKey);
+  if (!openclawRunId) {
+    throw new Error(
+      `No OpenClaw runId found for sessionKey ${sessionKey} — cannot resume`
+    );
+  }
 
   const result = await send<{ runId: string; acceptedAt: number }>("agent", {
     message,
     agentId: "sourcing",
-    sessionKey: wsSessionKey,
+    sessionKey: openclawRunId,
     deliver: false,
     thinking: "low",
     idempotencyKey,
@@ -321,6 +328,7 @@ export async function resumeAgentRun({
 
   runIdToSession.set(result.runId, sessionKey);
   sessionHandlers.set(sessionKey, onEvent);
+  sessionToOpenclawRunId.set(sessionKey, result.runId);
 
   return result.runId;
 }

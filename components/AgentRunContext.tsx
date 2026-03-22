@@ -95,6 +95,14 @@ export function AgentRunProvider({ children }: { children: ReactNode }) {
       );
     }
 
+    if (step.type === "TOOL_COMPLETE") {
+      setActiveRun((prev) =>
+        prev?.status === "PAUSED_FOR_APPROVAL"
+          ? { ...prev, status: "RUNNING" }
+          : prev
+      );
+    }
+
     if (step.type === "COMPLETED") {
       setActiveRun((prev) => (prev ? { ...prev, status: "COMPLETED" } : prev));
     }
