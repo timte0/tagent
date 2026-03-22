@@ -282,10 +282,13 @@ export async function triggerAgentRun({
 }): Promise<string> {
   const idempotencyKey = `${sessionKey}:${Date.now()}`;
 
+  // Prefix sessionKey so OpenClaw creates a new named session (not the default "main")
+  const wsSessionKey = `run:${sessionKey}`;
+
   const result = await send<{ runId: string; acceptedAt: number }>("agent", {
     message,
     agentId,
-    sessionKey,
+    sessionKey: wsSessionKey,
     deliver: false,
     thinking: "low",
     timeout: timeoutSeconds * 1000,
@@ -309,10 +312,12 @@ export async function resumeAgentRun({
 }): Promise<string> {
   const idempotencyKey = `${sessionKey}:resume:${Date.now()}`;
 
+  const wsSessionKey = `run:${sessionKey}`;
+
   const result = await send<{ runId: string; acceptedAt: number }>("agent", {
     message,
     agentId: "sourcing",
-    sessionKey,
+    sessionKey: wsSessionKey,
     deliver: false,
     thinking: "low",
     idempotencyKey,
