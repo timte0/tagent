@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { SourceType } from "@/app/generated/prisma/client";
-import { PDFParse } from "pdf-parse";
+import pdfParse from "pdf-parse";
 
 export async function GET() {
   const session = await getSession();
@@ -45,10 +45,7 @@ export async function POST(req: NextRequest) {
 
     let rawContent: string;
     try {
-      PDFParse.setWorker(""); // disable web worker in Node.js / Next.js server
-      const parser = new PDFParse({ data: buffer });
-      const result = await parser.getText();
-      await parser.destroy();
+      const result = await pdfParse(buffer);
       rawContent = result.text?.trim() ?? "";
     } catch (err) {
       console.error("[pdf-parse error]", err);
