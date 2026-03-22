@@ -51,29 +51,32 @@ function ensureConnected(): Promise<WebSocket> {
 
     socket.on("open", () => {
       const connectId = "connect-init";
-      socket!.send(
-        JSON.stringify({
-          type: "req",
-          id: connectId,
-          method: "connect",
-          params: {
-            minProtocol: 2,
-            maxProtocol: 3,
-            auth: {
-              token: process.env.OPENCLAW_GATEWAY_TOKEN,
-            },
-            scopes: ["operator.read", "operator.write"],
-            client: {
-              id: "gateway-client",
-              displayName: "Tagent Backend",
-              version: "1.0.0",
-              platform: "node",
-              mode: "backend",
-              instanceId: "A1B2",
-            },
+      const connectPayload = {
+        type: "req",
+        id: connectId,
+        method: "connect",
+        params: {
+          minProtocol: 2,
+          maxProtocol: 3,
+          auth: {
+            token: process.env.OPENCLAW_GATEWAY_TOKEN,
           },
-        })
-      );
+          scopes: ["operator.read", "operator.write"],
+          client: {
+            id: "gateway-client",
+            displayName: "Tagent Backend",
+            version: "1.0.0",
+            platform: "node",
+            mode: "backend",
+            instanceId: "A1B2",
+          },
+        },
+      };
+      console.log("[openclaw] sending connect payload:", JSON.stringify({
+        ...connectPayload,
+        params: { ...connectPayload.params, auth: { token: "[REDACTED]" } },
+      }));
+      socket!.send(JSON.stringify(connectPayload));
 
       // Resolve after connect response is received (see message handler below)
       const onConnect = (raw: WebSocket.RawData) => {
@@ -86,6 +89,7 @@ function ensureConnected(): Promise<WebSocket> {
         if (msg.type === "res" && msg.id === connectId) {
           socket!.off("message", onConnect);
           if (msg.ok) {
+            console.log("[openclaw] hello-ok payload:", JSON.stringify(msg.payload));
             socketReady = true;
             socket!.on("message", handleMessage);
             resolve();
