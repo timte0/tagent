@@ -318,102 +318,103 @@ export function requireRole(user: SessionUser, ...roles: Role[]) {
 
 This is the most important section. Read it carefully.
 
-### 8.1 Triggering a run
+> **IMPLEMENTATION NOTE:** The original design used HTTP callbacks (`POST /hooks/agent` + callback URL).
+> This was scrapped. OpenClaw does not support a `callbackUrl` on the hooks endpoint.
+> The actual implementation uses a persistent **WebSocket RPC** connection to OpenClaw.
+> All code in `lib/openclaw.ts` reflects the WS approach. The HTTP callback endpoint
+> (`app/api/agent/callback/route.ts`) exists but is dead code — do not rely on it.
 
-Your Next.js backend calls OpenClaw's webhook:
+### 8.1 OpenClaw WS connection
+
+`lib/openclaw.ts` maintains a singleton WebSocket to `OPENCLAW_URL` (replacing `http` with `ws`).
+
+**Handshake sequence:**
+1. Connect → OpenClaw sends `{ type: "event", event: "connect.challenge", payload: { nonce } }`
+2. Sign the nonce using the Ed25519 device identity (`OPENCLAW_DEVICE_IDENTITY_PATH`) with a v3 payload
+3. Send `{ type: "req", id: "connect-init", method: "connect", params: { auth: { token: OPENCLAW_GATEWAY_TOKEN, deviceToken: OPENCLAW_DEVICE_TOKEN }, device: { ...signedBlock }, role: "operator", scopes: ["operator.read", "operator.write"], ... } }`
+4. OpenClaw responds `{ type: "res", id: "connect-init", ok: true }` → connection ready
+
+**Device identity:** generated once via `scripts/pair-openclaw-device.mjs`, stored at `OPENCLAW_DEVICE_IDENTITY_PATH`. The device token (`OPENCLAW_DEVICE_TOKEN`) is obtained by running:
+```
+openclaw devices approve --latest
+openclaw devices rotate --device <deviceId> --role operator --scope operator.read --scope operator.write
+```
+
+**Three separate OpenClaw tokens (do not confuse them):**
+- `OPENCLAW_GATEWAY_TOKEN` — WS connect auth
+- `OPENCLAW_DEVICE_TOKEN` — device-bound operator scopes (grants `operator.write`)
+- `OPENCLAW_HOOKS_TOKEN` — HTTP `/hooks/agent` endpoint (legacy, currently unused)
+
+### 8.2 Triggering a run
 
 ```ts
-// lib/openclaw.ts
-POST ${OPENCLAW_URL}/hooks/agent
-Authorization: Bearer ${OPENCLAW_HOOKS_TOKEN}
-Content-Type: application/json
-
-{
-  "message": "<full sourcing prompt including JD content>",
-  "name": "SourcingRun",
-  "sessionKey": "<run.id>",        // CRITICAL — ties callbacks back to this run
-  "agentId": "sourcing",           // dedicated sourcing agent in OpenClaw
-  "timeoutSeconds": 600
-}
+// lib/openclaw.ts — triggerAgentRun()
+WS send: { type: "req", method: "agent", params: {
+  message,
+  agentId: "sourcing",
+  // NO sessionKey — let OpenClaw create a new session
+  deliver: false,
+  thinking: "low",
+  timeout: 600_000,
+  idempotencyKey,
+}}
+// Response: { runId: string; acceptedAt: number }
 ```
 
-### 8.2 OpenClaw posts callbacks to your app
+**Critical:** do NOT send `sessionKey` in the trigger call. Sending one caused
+`"agent 'sourcing' does not match session key agent 'main'"` errors because it
+accidentally matched an existing session with a different agent.
 
-OpenClaw's sourcing skill calls `POST ${NEXT_PUBLIC_APP_URL}/api/agent/callback` at each step.
+After the trigger resolves, the OpenClaw `runId` is stored in memory:
+- `runIdToSession: Map<openclawRunId, ourSessionKey>` — routes incoming events
+- `sessionHandlers: Map<ourSessionKey, handler>` — delivers events to the right handler
+- `sessionToOpenclawRunId: Map<ourSessionKey, openclawRunId>` — needed for resume
 
-**Authentication:** every callback must include the header:
+### 8.3 Receiving events
 
-```
-x-callback-secret: ${OPENCLAW_CALLBACK_SECRET}
-```
-
-Your callback endpoint must reject any request missing or with a wrong secret with 401.
-
-**Callback payload shape:**
+OpenClaw pushes `{ type: "event", event: "agent", payload: AgentEvent }` frames over WS.
 
 ```ts
-type CallbackPayload =
-  | { runId: string; type: "plan_approval"; plan: string }
-  | { runId: string; type: "tool_complete"; tool: string; summary: string }
-  | {
-      runId: string;
-      type: "completed";
-      candidates: Candidate[];
-      usageCostUsd: number;
-    }
-  | { runId: string; type: "error"; message: string };
-
-type Candidate = {
-  fullName?: string;
-  currentTitle?: string;
-  company?: string;
-  location?: string;
-  linkedinUrl?: string;
-  email?: string;
-  phone?: string;
-  cvLink?: string;
-  skills?: string[];
-  source: string; // "linkedin" | "hellowork"
+type AgentEvent = {
+  runId: string;              // OpenClaw's runId
+  seq: number;
+  stream: "assistant" | "tool" | "lifecycle";
+  ts: number;
+  data: Record<string, unknown>;
 };
 ```
 
-**What your callback endpoint does per type:**
+**Event routing in `app/api/agent/trigger/route.ts`:**
+- `stream === "assistant"` → accumulate `data.text` into `assistantBuffer`
+- `stream === "tool"` → create `TOOL_COMPLETE` RunStep, SSE push
+- `stream === "lifecycle"`:
+  - `data.phase === "paused"` or `"waiting"` → flush `assistantBuffer` as `planText`, set status `PAUSED_FOR_APPROVAL`, create `PLAN_APPROVAL` RunStep, SSE push
+  - `data.phase === "end"` → set status `COMPLETED`, deduct billing, create `COMPLETED` RunStep, SSE push
+  - `data.phase === "error"` → set status `FAILED`, create `ERROR` RunStep, SSE push
 
-- `plan_approval` → write plan to run record, set status `PAUSED_FOR_APPROVAL`, append RunStep, SSE push to user
-- `tool_complete` → append RunStep, SSE push to user
-- `completed` → write results to run record, set status `COMPLETED`, set `endedAt`, deduct `usageBilledUsd` (= `usageCostUsd * 1.2`) from org balance, append RunStep, SSE push to user
-- `error` → set status `FAILED`, set `endedAt`, append RunStep, SSE push to user
+### 8.4 Plan approval resume
 
-### 8.3 Plan approval resume
+When user clicks "Approve & Continue" in the sidebar:
 
-When user approves (or modifies) the plan, your backend calls OpenClaw again:
+1. Frontend POSTs `{ runId, feedback? }` to `POST /api/agent/resume`
+2. Route sets DB status to `RUNNING`, then calls `resumeAgentRun()`
+3. `resumeAgentRun()` looks up the stored OpenClaw `runId` (`sessionToOpenclawRunId.get(sessionKey)`)
+4. Sends WS `agent` call with `sessionKey: openclawRunId` to resume the paused session
+5. New events route through the resume handler (same SSE channel, keyed by our `AgentRun.id`)
 
-```ts
-POST ${OPENCLAW_URL}/hooks/agent
-Authorization: Bearer ${OPENCLAW_HOOKS_TOKEN}
+**Known limitation:** `sessionToOpenclawRunId` is in-memory. If the process restarts between
+trigger and resume, the mapping is lost and resume throws
+`"No OpenClaw runId found for sessionKey X"`. Fix for production: add `openclawRunId String?`
+to `AgentRun` schema, store it in the trigger route, load it in the resume route.
 
-{
-  "message": "<user feedback text, or 'Approved' if no changes>",
-  "sessionKey": "<run.id>",    // same sessionKey — resumes the paused session
-  "agentId": "sourcing"
-}
-```
-
-Set run status back to `RUNNING` immediately when this call is made.
-
-### 8.4 SSE streaming
+### 8.5 SSE streaming
 
 - Endpoint: `GET /api/agent/stream/[runId]`
-- Returns `Content-Type: text/event-stream`
-- The server holds the connection open and writes events as callbacks arrive
-- Use a simple in-memory event emitter (e.g. Node.js `EventEmitter`) keyed by `runId` to bridge
-  the callback endpoint and the SSE endpoint within the same process
-- Each SSE event is a JSON-serialised `RunStep`
-- The client reconnects automatically if the connection drops (use `EventSource` with retry logic)
-- The SSE connection closes when the run reaches `COMPLETED` or `FAILED`
-
-**Important:** SSE works correctly on Vercel only if the route is configured as a streaming route.
-If deploying to a VPS (recommended given OpenClaw requirement), this is not an issue.
+- Uses Node.js `EventEmitter` (`lib/sse.ts`) to bridge the WS event handler → SSE client
+- On connect: sends all existing `RunStep` records as catch-up, then subscribes to live events
+- Sends `{ __type: "close" }` when run reaches `COMPLETED` or `FAILED`
+- Frontend `AgentRunContext.tsx` uses `EventSource` with auto-reconnect
+- Header `X-Accel-Buffering: no` disables Nginx buffering (important on VPS)
 
 ---
 
@@ -573,7 +574,7 @@ separate handler that updates `ToolCredential.isActive` and notifies the user vi
 - **Always validate the `x-callback-secret` header** before processing any OpenClaw callback.
 - **Always validate the Stripe webhook signature** before processing any billing event.
 - **The ADMIN role is unique** — there is exactly one ADMIN in the system. Do not build multi-admin flows.
-- **Session keys are immutable** — once a run is created, its `sessionKey` never changes.
+- **`AgentRun.sessionKey` equals `run.id`** — set at creation, never changed. The OpenClaw session is identified by the OpenClaw `runId` (tracked in-memory in `lib/openclaw.ts`).
 - **Log retention is 90 days** — build a cleanup job, do not rely on manual deletion.
 
 ---
@@ -610,22 +611,42 @@ Work in this order. Do not skip phases.
 
 ---
 
-## 16. Current state (as of 2026-03-21)
+## 16. Current state (as of 2026-03-22)
 
 ### What is done
-- Phases 1–5 are fully implemented and deployed on the VPS.
+- **Phases 1–5** fully implemented and deployed on the VPS.
+- **Phase 6 (plan approval)** — code is implemented; round-trip not yet fully verified (see active issue below).
 - The app is running via PM2 (`pm2 list` → `tagent`, online) on `http://51.254.139.70:3000`.
 - OpenClaw is running on the same VPS, listening on `127.0.0.1:18789`.
-- The connection from the app to OpenClaw is confirmed working.
-- Login works with `admin@tagent.local` / `changeme_admin_123!`.
+- WS connection app → OpenClaw confirmed working (Ed25519 device pairing complete).
+- Agent trigger works end-to-end: job → Run Agent → events stream → COMPLETED.
+- Login: `admin@tagent.local` / `changeme_admin_123!` | `manager@tagent.local` / `changeme_manager_123!`
+- PDF upload (pdf-parse v1 + `serverExternalPackages`) and URL scraping both work.
 
 ### VPS environment notes
-- `OPENCLAW_URL=http://127.0.0.1:18789` — OpenClaw only listens on localhost, not the public IP.
-- `NEXT_PUBLIC_APP_URL=http://127.0.0.1:3000` — used by OpenClaw to POST callbacks back to the app.
-- `COOKIE_SECURE` is not set (left unset = false) because the app is still on HTTP. Set to `true` once HTTPS is in place.
+- `OPENCLAW_URL=http://127.0.0.1:18789` — OpenClaw only listens on localhost.
+- `NEXT_PUBLIC_APP_URL=http://127.0.0.1:3000` — callbacks back to the app.
+- `COOKIE_SECURE` is not set (HTTP only). Set to `true` once HTTPS is in place.
+- `OPENCLAW_DEVICE_IDENTITY_PATH` — path to `.openclaw-device-identity.json` on the VPS.
+- `OPENCLAW_DEVICE_TOKEN` — obtained via `openclaw devices rotate …` after pairing.
+- PM2 env reload: always use `pm2 restart tagent --update-env` after `.env` changes.
+
+### Active issue — plan approval not triggering
+When running an agent, the run goes directly from RUNNING → COMPLETED without ever hitting
+PAUSED_FOR_APPROVAL. This means either:
+- OpenClaw's sourcing agent is not sending a `phase === "paused"` lifecycle event, OR
+- The `assistantBuffer` is empty when the paused event fires (no `stream === "assistant"` events received before the pause)
+
+**Debugging in place:** `app/api/agent/trigger/route.ts` has a temporary `console.log` on every
+event — check `pm2 logs tagent` after a run to see the exact event sequence and `data` fields.
+Remove the log line once the issue is understood.
+
+**Resume code is ready** but untested. Once plan approval works, the round-trip should be:
+trigger → paused → user clicks Approve → `POST /api/agent/resume` → `resumeAgentRun()` sends
+`sessionKey: openclawRunId` over WS → agent continues → COMPLETED.
 
 ### Next steps
-1. **End-to-end agent test** — log in, create a job (paste a job description as URL or upload PDF), click Run Agent, watch the sidebar for live steps and plan approval.
-2. **Phase 6** — Plan approval UI and resume call (partially in place via the sidebar, verify the full round-trip works).
-3. **Phase 7** — Integrations page (LinkedIn/HelloWork credential save + connection test).
-4. Long term: set up Nginx + HTTPS (phase 13) before any real users.
+1. **Fix plan approval** — use the temp logging to see what events OpenClaw sends; determine
+   whether the sourcing agent actually pauses, and if so, what the correct field/phase name is.
+2. **Phase 7** — Integrations page (LinkedIn/HelloWork credential save + connection test).
+3. **Long term** — Nginx + HTTPS (phase 13) before any real users.
