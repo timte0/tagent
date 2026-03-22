@@ -132,8 +132,9 @@ function handleMessage(raw: WebSocket.RawData) {
       if (msg.ok) {
         handler.resolve(msg.payload);
       } else {
+        const errDetail = (msg as Record<string, unknown>).error ?? msg.payload;
         handler.reject(
-          new Error(`OpenClaw error: ${JSON.stringify(msg.payload)}`)
+          new Error(`OpenClaw error: ${JSON.stringify(errDetail)}`)
         );
       }
     }
