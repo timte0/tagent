@@ -2,12 +2,15 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { triggerAgentRun, unregisterRun, type AgentEvent } from "@/lib/openclaw";
 import { publishRunEvent } from "@/lib/sse";
 import { RunStatus, StepType } from "@/app/generated/prisma/client";
 import { decrypt } from "@/lib/crypto";
-import { createAuthContext } from "@/lib/auth-context";
 import { parseJobDescription } from "@/lib/job-parser";
+import {
+  scrapeLinkedIn,
+  LinkedInAuthError,
+  type LinkedInCandidate,
+} from "@/lib/scrapers/linkedin";
 
 export async function POST(req: Request) {
   const session = await getSession();
@@ -42,9 +45,7 @@ export async function POST(req: Request) {
   const activeRun = await prisma.agentRun.findFirst({
     where: {
       orgId: session.orgId,
-      status: {
-        in: [RunStatus.PENDING, RunStatus.RUNNING],
-      },
+      status: { in: [RunStatus.PENDING, RunStatus.RUNNING] },
     },
     select: { id: true },
   });
@@ -77,124 +78,104 @@ export async function POST(req: Request) {
     },
   });
 
-  // Load user's tool credentials (LinkedIn, HelloWork)
-  const toolCredentials = await prisma.toolCredential.findMany({
-    where: { userId: session.id, isActive: true },
-    include: { tool: { select: { slug: true } } },
-  });
-
-  const credentialsMap: Record<string, { email: string; password: string }> = {};
-  for (const tc of toolCredentials) {
-    try {
-      const plain = JSON.parse(decrypt(tc.encryptedCredentials)) as {
-        email: string;
-        password: string;
-      };
-      credentialsMap[tc.tool.slug] = plain;
-    } catch {
-      // skip malformed credential
-    }
-  }
-
-  // Generate short-lived auth context (10 min TTL)
-  const authContextId = createAuthContext(session.id, credentialsMap);
-
-  // Parse job description into structured search params
-  let searchParams;
-  try {
-    searchParams = await parseJobDescription(job.rawContent);
-  } catch (err) {
-    console.error("[trigger] job parsing failed:", err);
-    // Fall back to job title only
-    searchParams = {
-      title: job.title ?? "Candidate",
-      location: null,
-      company: null,
-      keywords: [],
-    };
-  }
-
-  // Build structured message for OpenClaw
-  const messagePayload = {
-    task: "linkedin_search",
-    auth_context_id: authContextId,
-    search: {
-      title: searchParams.title,
-      ...(searchParams.location ? { location: searchParams.location } : {}),
-      ...(searchParams.company ? { company: searchParams.company } : {}),
-      keywords: searchParams.keywords,
-      limit: 25,
-    },
-    result_delivery: {
-      mode: "gateway_session",
-      sessionKey: run.id,
-    },
-  };
-
-  // Trigger OpenClaw via WebSocket — mark failed if it throws
-  try {
-    await triggerAgentRun({
-      message: JSON.stringify(messagePayload),
-      sessionKey: run.id,
-      onEvent: makeEventHandler(run.id, session.orgId),
-    });
-  } catch (err) {
-    await prisma.agentRun.update({
-      where: { id: run.id },
-      data: { status: RunStatus.FAILED, endedAt: new Date() },
-    });
-    console.error("[trigger] OpenClaw error:", err);
-    return NextResponse.json(
-      { error: "Failed to contact agent service" },
-      { status: 502 }
-    );
-  }
+  // Fire-and-forget sourcing pipeline
+  void runSourcingPipeline(run.id, session.orgId, session.id, job);
 
   return NextResponse.json({ runId: run.id });
 }
 
-// ─── Event handler ────────────────────────────────────────────────────────────
+// ─── Sourcing pipeline ────────────────────────────────────────────────────────
 
-function makeEventHandler(runId: string, orgId: string) {
-  return async function handleEvent(event: AgentEvent) {
-    try {
-      if (event.stream === "lifecycle") {
-        const phase = event.data.phase as string | undefined;
+async function runSourcingPipeline(
+  runId: string,
+  orgId: string,
+  userId: string,
+  job: { rawContent: string; title: string | null }
+) {
+  try {
+    // 1. Parse job description into structured search params
+    const searchParams = await parseJobDescription(job.rawContent).catch(() => ({
+      title: job.title ?? "Candidate",
+      location: null,
+      company: null,
+      keywords: [] as string[],
+    }));
 
-        if (phase === "end") {
-          await handleCompletion(runId, orgId, event.data);
-          unregisterRun(runId);
-        } else if (phase === "error") {
-          const message = (event.data.message as string) ?? "Agent error";
-          await prisma.agentRun.update({
-            where: { id: runId },
-            data: { status: RunStatus.FAILED, endedAt: new Date() },
-          });
-          const step = await prisma.runStep.create({
-            data: { runId, type: StepType.ERROR, content: { message } },
-          });
-          publishRunEvent(runId, step);
-          unregisterRun(runId);
-        }
-        return;
-      }
+    // 2. Load LinkedIn credentials for this user
+    const cred = await prisma.toolCredential.findFirst({
+      where: { userId, isActive: true, tool: { slug: "linkedin" } },
+      include: { tool: { select: { slug: true } } },
+    });
 
-      if (event.stream === "tool") {
-        const tool = (event.data.name as string) ?? "unknown";
-        const summary = (event.data.summary as string) ?? "";
-        const step = await prisma.runStep.create({
-          data: {
-            runId,
-            type: StepType.TOOL_COMPLETE,
-            content: { tool, summary },
+    if (!cred) {
+      await prisma.agentRun.update({
+        where: { id: runId },
+        data: { status: RunStatus.FAILED, endedAt: new Date() },
+      });
+      const step = await prisma.runStep.create({
+        data: {
+          runId,
+          type: StepType.ERROR,
+          content: {
+            message:
+              "No LinkedIn credentials configured. Go to Integrations to connect your account.",
           },
-        });
-        publishRunEvent(runId, step);
-      }
-    } catch (err) {
-      console.error("[openclaw event handler]", err);
+        },
+      });
+      publishRunEvent(runId, step);
+      return;
     }
-  };
+
+    const plain = JSON.parse(decrypt(cred.encryptedCredentials)) as {
+      email: string;
+      password: string;
+    };
+
+    // 3. Publish "searching" step so the sidebar shows activity
+    const searchStep = await prisma.runStep.create({
+      data: {
+        runId,
+        type: StepType.TOOL_COMPLETE,
+        content: {
+          tool: "linkedin_scraper",
+          summary: `Searching for ${searchParams.title}${
+            searchParams.location ? " in " + searchParams.location : ""
+          }…`,
+        },
+      },
+    });
+    publishRunEvent(runId, searchStep);
+
+    // 4. Run the Playwright LinkedIn scraper
+    const candidates = await scrapeLinkedIn(
+      { email: plain.email, password: plain.password },
+      {
+        title: searchParams.title,
+        location: searchParams.location,
+        keywords: searchParams.keywords,
+        limit: 25,
+      }
+    );
+
+    // 5. Store results and mark completed
+    await handleCompletion(runId, orgId, candidates);
+  } catch (err) {
+    const message =
+      err instanceof LinkedInAuthError
+        ? `LinkedIn authentication failed: ${err.message}`
+        : "Scraping failed. Please try again.";
+
+    console.error("[sourcing pipeline]", err);
+
+    await prisma.agentRun.update({
+      where: { id: runId },
+      data: { status: RunStatus.FAILED, endedAt: new Date() },
+    });
+    const step = await prisma.runStep.create({
+      data: { runId, type: StepType.ERROR, content: { message } },
+    });
+    publishRunEvent(runId, step);
+  }
 }
 
 // ─── Completion handler ───────────────────────────────────────────────────────
@@ -202,46 +183,11 @@ function makeEventHandler(runId: string, orgId: string) {
 async function handleCompletion(
   runId: string,
   orgId: string,
-  data: Record<string, unknown>
+  candidates: LinkedInCandidate[]
 ) {
-  const candidates = (data.candidates as object[]) ?? [];
-  const usageCostUsd = (data.usageCostUsd as number) ?? 0;
-  const usageBilledUsd = usageCostUsd * 1.2;
-
-  const org = await prisma.org.findUnique({ where: { id: orgId } });
-  if (org) {
-    const monthlyDeduction = Math.min(org.monthlyAllowanceUsd, usageBilledUsd);
-    const additionalDeduction = usageBilledUsd - monthlyDeduction;
-
-    await prisma.$transaction([
-      prisma.org.update({
-        where: { id: orgId },
-        data: {
-          monthlyAllowanceUsd: { decrement: monthlyDeduction },
-          additionalCreditsUsd: { decrement: additionalDeduction },
-        },
-      }),
-      prisma.creditTransaction.create({
-        data: {
-          orgId,
-          type: "USAGE",
-          amountUsd: -usageBilledUsd,
-          note: `Agent run ${runId}`,
-        },
-      }),
-    ]);
-
-    // 80% usage warning check
-    const updatedOrg = await prisma.org.findUnique({ where: { id: orgId } });
-    if (updatedOrg) {
-      const tierAllowance = getTierAllowance(updatedOrg.tier);
-      const consumed = tierAllowance - updatedOrg.monthlyAllowanceUsd;
-      if (consumed / tierAllowance >= 0.8) {
-        publishRunEvent(runId, { __type: "usage_warning", consumed, tierAllowance });
-        // TODO: send email to org managers (Phase 11)
-      }
-    }
-  }
+  // No LLM cost for Playwright scraping — usage is $0
+  const usageCostUsd = 0;
+  const usageBilledUsd = 0;
 
   await prisma.agentRun.update({
     where: { id: runId },
@@ -262,15 +208,4 @@ async function handleCompletion(
     },
   });
   publishRunEvent(runId, step);
-}
-
-function getTierAllowance(tier: string): number {
-  switch (tier) {
-    case "GROWTH":
-      return 160;
-    case "SCALE":
-      return 480;
-    default:
-      return 80;
-  }
 }
