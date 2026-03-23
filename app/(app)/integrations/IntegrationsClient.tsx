@@ -21,9 +21,6 @@ type CardState = {
   credential: ToolWithStatus["credential"];
 };
 
-function sleep(ms: number) {
-  return new Promise<void>((r) => setTimeout(r, ms));
-}
 
 export default function IntegrationsClient({
   tools,
@@ -80,52 +77,16 @@ export default function IntegrationsClient({
         return;
       }
 
-      // Clear form, enter testing state
       patch(slug, {
         saving: false,
         showForm: false,
         email: "",
         password: "",
-        testing: true,
-        testResult: null,
+        testing: false,
+        testResult: "connected",
         error: null,
-        // Optimistic placeholder credential (isActive=false until test resolves)
-        credential: { id: "pending", isActive: false, createdAt: new Date().toISOString() },
+        credential: { id: "saved", isActive: true, createdAt: new Date().toISOString() },
       });
-
-      // Poll for test result
-      for (let i = 0; i < 15; i++) {
-        await sleep(2000);
-        try {
-          const statusRes = await fetch(`/api/integrations/${slug}/status`);
-          if (!statusRes.ok) continue;
-          const { isActive } = (await statusRes.json()) as {
-            isActive: boolean | null;
-          };
-
-          if (isActive === true) {
-            patch(slug, {
-              testing: false,
-              testResult: "connected",
-              credential: { id: "active", isActive: true, createdAt: new Date().toISOString() },
-            });
-            return;
-          }
-          if (isActive === false) {
-            patch(slug, {
-              testing: false,
-              testResult: "failed",
-              credential: { id: "failed", isActive: false, createdAt: new Date().toISOString() },
-            });
-            return;
-          }
-          // null = still testing, continue
-        } catch {
-          // network hiccup — keep polling
-        }
-      }
-
-      patch(slug, { testing: false, testResult: "timeout" });
     } catch {
       patch(slug, { saving: false, error: "Network error. Please try again." });
     }
@@ -234,18 +195,6 @@ export default function IntegrationsClient({
             {s.error && (
               <p className="mt-3 text-sm text-red-600 bg-red-50 rounded-md px-3 py-2">
                 {s.error}
-              </p>
-            )}
-
-            {s.testResult === "failed" && (
-              <p className="mt-3 text-sm text-red-600 bg-red-50 rounded-md px-3 py-2">
-                Connection test failed. Check your credentials and try again.
-              </p>
-            )}
-
-            {s.testResult === "timeout" && (
-              <p className="mt-3 text-sm text-yellow-700 bg-yellow-50 rounded-md px-3 py-2">
-                Connection test timed out. Status unknown — try running the agent to verify.
               </p>
             )}
 

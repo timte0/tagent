@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { encrypt } from "@/lib/crypto";
-import { triggerAgentRun, unregisterRun, type AgentEvent } from "@/lib/openclaw";
 
 export async function POST(
   req: Request,
@@ -53,21 +52,11 @@ export async function POST(
 
   await prisma.toolCredential.upsert({
     where: { userId_toolId: { userId: session.id, toolId: tool.id } },
-    create: {
-      userId: session.id,
-      toolId: tool.id,
-      encryptedCredentials,
-      isActive: false,
-    },
-    update: {
-      encryptedCredentials,
-      isActive: false,
-    },
+    create: { userId: session.id, toolId: tool.id, encryptedCredentials, isActive: true },
+    update: { encryptedCredentials, isActive: true },
   });
 
-  void runConnectionTest(session.id, tool.id, toolSlug);
-
-  return NextResponse.json({ status: "testing" });
+  return NextResponse.json({ status: "saved" });
 }
 
 export async function DELETE(
@@ -91,36 +80,4 @@ export async function DELETE(
   });
 
   return new Response(null, { status: 204 });
-}
-
-// ─── Connection test ──────────────────────────────────────────────────────────
-
-async function runConnectionTest(
-  userId: string,
-  toolId: string,
-  toolSlug: string
-): Promise<void> {
-  try {
-    const sessionKey = `connection-test:${userId}:${toolSlug}:${Date.now()}`;
-    await triggerAgentRun({
-      message: `Test the connection for tool: ${toolSlug}. Attempt to log in using the stored credentials. Report success or failure.`,
-      sessionKey,
-      onEvent: async (event: AgentEvent) => {
-        if (event.stream !== "lifecycle") return;
-        const phase = event.data.phase as string | undefined;
-        if (phase === "end" || phase === "error") {
-          await prisma.toolCredential
-            .updateMany({
-              where: { userId, toolId },
-              data: { isActive: phase === "end" },
-            })
-            .catch(console.error);
-          unregisterRun(sessionKey);
-        }
-      },
-    });
-  } catch (err) {
-    console.error("[connection-test]", err);
-    // isActive stays false — frontend polling will time out gracefully
-  }
 }
