@@ -10,6 +10,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 
 type CardState = {
   showForm: boolean;
+  // LinkedIn uses liAt; other tools use email + password
+  liAt: string;
   email: string;
   password: string;
   saving: boolean;
@@ -17,10 +19,12 @@ type CardState = {
   testing: boolean;
   testResult: "connected" | "failed" | "timeout" | null;
   error: string | null;
-  // live credential state (can change after save/delete)
   credential: ToolWithStatus["credential"];
 };
 
+function isValidLiAt(value: string): boolean {
+  return value.trim().length >= 100 && !/\s/.test(value.trim());
+}
 
 export default function IntegrationsClient({
   tools,
@@ -32,6 +36,7 @@ export default function IntegrationsClient({
     for (const t of tools) {
       init[t.slug] = {
         showForm: false,
+        liAt: "",
         email: "",
         password: "",
         saving: false,
@@ -54,18 +59,38 @@ export default function IntegrationsClient({
 
   async function handleSave(slug: string) {
     const s = state[slug];
-    if (!s.email || !s.password) {
-      patch(slug, { error: "Email and password are required." });
-      return;
+
+    if (slug === "linkedin") {
+      if (!s.liAt.trim()) {
+        patch(slug, { error: "Please paste your li_at cookie value." });
+        return;
+      }
+      if (!isValidLiAt(s.liAt)) {
+        patch(slug, {
+          error:
+            "This doesn't look like a valid li_at cookie. Make sure you copied the full value.",
+        });
+        return;
+      }
+    } else {
+      if (!s.email || !s.password) {
+        patch(slug, { error: "Email and password are required." });
+        return;
+      }
     }
 
     patch(slug, { saving: true, error: null });
 
     try {
+      const body =
+        slug === "linkedin"
+          ? { liAt: s.liAt.trim() }
+          : { email: s.email, password: s.password };
+
       const res = await fetch(`/api/integrations/${slug}/credentials`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: s.email, password: s.password }),
+        body: JSON.stringify(body),
       });
 
       if (!res.ok) {
@@ -80,6 +105,7 @@ export default function IntegrationsClient({
       patch(slug, {
         saving: false,
         showForm: false,
+        liAt: "",
         email: "",
         password: "",
         testing: false,
@@ -204,48 +230,59 @@ export default function IntegrationsClient({
                   e.preventDefault();
                   void handleSave(tool.slug);
                 }}
-                className="mt-4 space-y-3 max-w-sm"
+                className="mt-4 space-y-3 max-w-lg"
               >
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Email
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    autoComplete="off"
-                    value={s.email}
-                    onChange={(e) => patch(tool.slug, { email: e.target.value })}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    placeholder="you@example.com"
+                {tool.slug === "linkedin" ? (
+                  <LinkedInCookieField
+                    value={s.liAt}
+                    onChange={(v) => patch(tool.slug, { liAt: v, error: null })}
                   />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Password
-                  </label>
-                  <input
-                    type="password"
-                    required
-                    autoComplete="new-password"
-                    value={s.password}
-                    onChange={(e) => patch(tool.slug, { password: e.target.value })}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Email
+                      </label>
+                      <input
+                        type="email"
+                        required
+                        autoComplete="off"
+                        value={s.email}
+                        onChange={(e) => patch(tool.slug, { email: e.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        placeholder="you@example.com"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Password
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        autoComplete="new-password"
+                        value={s.password}
+                        onChange={(e) => patch(tool.slug, { password: e.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                    </div>
+                  </>
+                )}
+
                 <div className="flex items-center gap-3">
                   <button
                     type="submit"
                     disabled={s.saving}
                     className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
-                    {s.saving ? "Saving…" : "Save & Test"}
+                    {s.saving ? "Saving…" : "Save"}
                   </button>
                   <button
                     type="button"
                     onClick={() =>
                       patch(tool.slug, {
                         showForm: false,
+                        liAt: "",
                         email: "",
                         password: "",
                         error: null,
@@ -261,6 +298,60 @@ export default function IntegrationsClient({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ─── LinkedIn cookie field ─────────────────────────────────────────────────────
+
+function LinkedInCookieField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const trimmed = value.trim();
+  const showFormatError =
+    trimmed.length > 0 && trimmed.length < 100;
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg bg-blue-50 border border-blue-100 p-4 text-sm text-blue-800 space-y-1">
+        <p className="font-medium mb-2">How to find your li_at cookie:</p>
+        <ol className="list-decimal list-inside space-y-1 text-blue-700">
+          <li>Open <strong>linkedin.com</strong> in your browser and make sure you're logged in</li>
+          <li>Open DevTools — press <strong>F12</strong> (Windows) or <strong>Cmd+Opt+I</strong> (Mac)</li>
+          <li>Go to <strong>Application</strong> → <strong>Cookies</strong> → <strong>https://www.linkedin.com</strong></li>
+          <li>Find the cookie named <strong>li_at</strong> and copy its full value</li>
+        </ol>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          li_at cookie value
+        </label>
+        <textarea
+          required
+          rows={3}
+          autoComplete="off"
+          spellCheck={false}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="AQEDATxxxxxxxxxxxxxxxx…"
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 font-mono placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+        />
+        {showFormatError && (
+          <p className="mt-1 text-xs text-red-600">
+            This doesn&apos;t look like a valid li_at cookie. Make sure you copied the full value.
+          </p>
+        )}
+        {trimmed.length >= 100 && (
+          <p className="mt-1 text-xs text-green-600">
+            Format looks good.
+          </p>
+        )}
+      </div>
     </div>
   );
 }

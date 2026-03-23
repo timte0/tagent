@@ -18,17 +18,6 @@ export async function POST(
   const { toolSlug } = await params;
 
   const body = await req.json().catch(() => ({}));
-  const { email, password } = body as { email?: string; password?: string };
-
-  if (!email || !password) {
-    return NextResponse.json(
-      { error: "email and password are required" },
-      { status: 400 }
-    );
-  }
-  if (!email.includes("@")) {
-    return NextResponse.json({ error: "Invalid email address" }, { status: 400 });
-  }
 
   const tool = await prisma.tool.findUnique({
     where: { slug: toolSlug },
@@ -48,7 +37,30 @@ export async function POST(
     );
   }
 
-  const encryptedCredentials = encrypt(JSON.stringify({ email, password }));
+  let encryptedCredentials: string;
+
+  if (toolSlug === "linkedin") {
+    const { liAt } = body as { liAt?: string };
+    if (!liAt || liAt.trim().length < 100 || /\s/.test(liAt.trim())) {
+      return NextResponse.json(
+        { error: "Invalid li_at cookie. Make sure you copied the full value." },
+        { status: 400 }
+      );
+    }
+    encryptedCredentials = encrypt(JSON.stringify({ liAt: liAt.trim() }));
+  } else {
+    const { email, password } = body as { email?: string; password?: string };
+    if (!email || !password) {
+      return NextResponse.json(
+        { error: "email and password are required" },
+        { status: 400 }
+      );
+    }
+    if (!email.includes("@")) {
+      return NextResponse.json({ error: "Invalid email address" }, { status: 400 });
+    }
+    encryptedCredentials = encrypt(JSON.stringify({ email, password }));
+  }
 
   await prisma.toolCredential.upsert({
     where: { userId_toolId: { userId: session.id, toolId: tool.id } },

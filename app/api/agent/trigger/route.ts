@@ -127,8 +127,7 @@ async function runSourcingPipeline(
     }
 
     const plain = JSON.parse(decrypt(cred.encryptedCredentials)) as {
-      email: string;
-      password: string;
+      liAt: string;
     };
 
     // 3. Publish "searching" step so the sidebar shows activity
@@ -148,7 +147,7 @@ async function runSourcingPipeline(
 
     // 4. Run the Playwright LinkedIn scraper
     const candidates = await scrapeLinkedIn(
-      { email: plain.email, password: plain.password },
+      { liAt: plain.liAt },
       {
         title: searchParams.title,
         location: searchParams.location,

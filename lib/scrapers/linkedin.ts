@@ -17,7 +17,7 @@ export type LinkedInCandidate = {
 };
 
 export async function scrapeLinkedIn(
-  credentials: { email: string; password: string },
+  credentials: { liAt: string },
   search: {
     title: string;
     location?: string | null;
@@ -35,27 +35,20 @@ export async function scrapeLinkedIn(
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     });
+
+    // Inject the li_at session cookie — bypasses login entirely
+    await context.addCookies([
+      {
+        name: "li_at",
+        value: credentials.liAt,
+        domain: ".linkedin.com",
+        path: "/",
+        httpOnly: true,
+        secure: true,
+      },
+    ]);
+
     const page = await context.newPage();
-
-    // ── Login ──────────────────────────────────────────────────────────────────
-    await page.goto("https://www.linkedin.com/login", { waitUntil: "domcontentloaded" });
-    await page.fill("#username", credentials.email);
-    await page.fill("#password", credentials.password);
-    await page.click('[data-id="sign-in-form__submit-btn"], button[type="submit"]');
-
-    // Wait for redirect away from login page
-    try {
-      await page.waitForURL((url) => !url.href.includes("/login"), { timeout: 15000 });
-    } catch {
-      throw new LinkedInAuthError("Invalid credentials or login page did not redirect.");
-    }
-
-    // Check for security challenge
-    if (page.url().includes("/checkpoint") || page.url().includes("/challenge")) {
-      throw new LinkedInAuthError(
-        "LinkedIn requires a security verification. Please log in manually once to clear the checkpoint."
-      );
-    }
 
     // ── Search ─────────────────────────────────────────────────────────────────
     const queryParts = [search.title];
@@ -66,6 +59,14 @@ export async function scrapeLinkedIn(
     const searchUrl = `https://www.linkedin.com/search/results/people/?keywords=${query}&origin=GLOBAL_SEARCH_HEADER`;
 
     await page.goto(searchUrl, { waitUntil: "domcontentloaded" });
+
+    // Check if the cookie was invalid — LinkedIn redirects to login or checkpoint
+    const url = page.url();
+    if (url.includes("/login") || url.includes("/checkpoint") || url.includes("/authwall")) {
+      throw new LinkedInAuthError(
+        "Session cookie is expired or invalid. Please update your li_at cookie in Integrations."
+      );
+    }
 
     // Wait for results
     try {
@@ -92,7 +93,6 @@ export async function scrapeLinkedIn(
         );
 
         const rawHref = linkEl?.href ?? "";
-        // Strip query params from profile URL
         const profileUrl = rawHref.split("?")[0] ?? rawHref;
 
         return {
@@ -106,7 +106,6 @@ export async function scrapeLinkedIn(
       });
     }, search.limit);
 
-    // Filter out any cards where we couldn't extract a name or URL
     return candidates.filter((c) => c.full_name && c.profile_url);
   } finally {
     await browser.close();
