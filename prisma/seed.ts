@@ -68,12 +68,12 @@ async function main() {
   // ── LinkedIn tool ────────────────────────────────────────────────────────────
   const linkedin = await prisma.tool.upsert({
     where: { slug: "linkedin" },
-    update: {},
+    update: { isGloballyEnabled: true },
     create: {
       name: "LinkedIn",
       slug: "linkedin",
       authType: AuthType.USER_CREDENTIALS,
-      isGloballyEnabled: false,
+      isGloballyEnabled: true,
     },
   });
   console.log(`✓ Tool seeded: ${linkedin.name} (${linkedin.slug})`);
@@ -81,15 +81,25 @@ async function main() {
   // ── HelloWork tool ───────────────────────────────────────────────────────────
   const hellowork = await prisma.tool.upsert({
     where: { slug: "hellowork" },
-    update: {},
+    update: { isGloballyEnabled: true },
     create: {
       name: "HelloWork",
       slug: "hellowork",
       authType: AuthType.USER_CREDENTIALS,
-      isGloballyEnabled: false,
+      isGloballyEnabled: true,
     },
   });
   console.log(`✓ Tool seeded: ${hellowork.name} (${hellowork.slug})`);
+
+  // ── OrgTool entries for demo org ─────────────────────────────────────────────
+  for (const tool of [linkedin, hellowork]) {
+    await prisma.orgTool.upsert({
+      where: { orgId_toolId: { orgId: demoOrg.id, toolId: tool.id } },
+      update: { isEnabled: true },
+      create: { orgId: demoOrg.id, toolId: tool.id, isEnabled: true },
+    });
+    console.log(`✓ OrgTool enabled: ${tool.name} for ${demoOrg.name}`);
+  }
 }
 
 main()
