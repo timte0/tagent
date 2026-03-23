@@ -16,14 +16,13 @@ export async function GET() {
     where: {
       orgId: session.orgId,
       status: {
-        in: [RunStatus.PENDING, RunStatus.RUNNING, RunStatus.PAUSED_FOR_APPROVAL],
+        in: [RunStatus.PENDING, RunStatus.RUNNING],
       },
     },
     orderBy: { startedAt: "desc" },
     select: {
       id: true,
       status: true,
-      planText: true,
       startedAt: true,
       job: { select: { title: true } },
       steps: {

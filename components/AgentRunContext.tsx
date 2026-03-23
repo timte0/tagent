@@ -19,7 +19,6 @@ type RunStep = {
 type ActiveRun = {
   id: string;
   status: string;
-  planText: string | null;
   startedAt: string;
   job: { title: string | null } | null;
   steps: RunStep[];
@@ -65,7 +64,7 @@ export function AgentRunProvider({ children }: { children: ReactNode }) {
     setActiveRun((prev) =>
       prev?.id === id
         ? prev
-        : { id, status: "RUNNING", planText: null, startedAt: new Date().toISOString(), job: null, steps: [] }
+        : { id, status: "RUNNING", startedAt: new Date().toISOString(), job: null, steps: [] }
     );
     setSteps([]);
   }, []);
@@ -82,26 +81,6 @@ export function AgentRunProvider({ children }: { children: ReactNode }) {
       if (prev.some((s) => s.id === step.id)) return prev;
       return [...prev, step];
     });
-
-    if (step.type === "PLAN_APPROVAL") {
-      setActiveRun((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: "PAUSED_FOR_APPROVAL",
-              planText: (step.content.plan as string) ?? prev.planText,
-            }
-          : prev
-      );
-    }
-
-    if (step.type === "TOOL_COMPLETE") {
-      setActiveRun((prev) =>
-        prev?.status === "PAUSED_FOR_APPROVAL"
-          ? { ...prev, status: "RUNNING" }
-          : prev
-      );
-    }
 
     if (step.type === "COMPLETED") {
       setActiveRun((prev) => (prev ? { ...prev, status: "COMPLETED" } : prev));

@@ -40,7 +40,7 @@ export async function POST(req: Request) {
     where: {
       orgId: session.orgId,
       status: {
-        in: [RunStatus.PENDING, RunStatus.RUNNING, RunStatus.PAUSED_FOR_APPROVAL],
+        in: [RunStatus.PENDING, RunStatus.RUNNING],
       },
     },
     select: { id: true },
@@ -106,13 +106,7 @@ export async function POST(req: Request) {
 // ─── Event handler ────────────────────────────────────────────────────────────
 
 function makeEventHandler(runId: string, orgId: string) {
-  // Accumulate assistant text for plan detection
-  let assistantBuffer = "";
-  let planPublished = false;
-
   return async function handleEvent(event: AgentEvent) {
-    // TEMP: log every event to diagnose plan approval flow
-    console.log("[openclaw event]", JSON.stringify({ stream: event.stream, data: event.data }));
     try {
       if (event.stream === "lifecycle") {
         const phase = event.data.phase as string | undefined;
@@ -131,26 +125,6 @@ function makeEventHandler(runId: string, orgId: string) {
           });
           publishRunEvent(runId, step);
           unregisterRun(runId);
-        } else if (phase === "paused" || phase === "waiting") {
-          // Agent is pausing for plan approval
-          if (!planPublished && assistantBuffer.trim()) {
-            await prisma.agentRun.update({
-              where: { id: runId },
-              data: {
-                planText: assistantBuffer.trim(),
-                status: RunStatus.PAUSED_FOR_APPROVAL,
-              },
-            });
-            const step = await prisma.runStep.create({
-              data: {
-                runId,
-                type: StepType.PLAN_APPROVAL,
-                content: { plan: assistantBuffer.trim() },
-              },
-            });
-            publishRunEvent(runId, step);
-            planPublished = true;
-          }
         }
         return;
       }
@@ -166,13 +140,6 @@ function makeEventHandler(runId: string, orgId: string) {
           },
         });
         publishRunEvent(runId, step);
-        return;
-      }
-
-      if (event.stream === "assistant") {
-        // Accumulate text (used for plan detection above)
-        const delta = (event.data.text as string) ?? "";
-        assistantBuffer += delta;
       }
     } catch (err) {
       console.error("[openclaw event handler]", err);
