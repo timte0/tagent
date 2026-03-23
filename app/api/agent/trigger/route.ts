@@ -5,6 +5,9 @@ import { prisma } from "@/lib/prisma";
 import { triggerAgentRun, unregisterRun, type AgentEvent } from "@/lib/openclaw";
 import { publishRunEvent } from "@/lib/sse";
 import { RunStatus, StepType } from "@/app/generated/prisma/client";
+import { decrypt } from "@/lib/crypto";
+import { createAuthContext } from "@/lib/auth-context";
+import { parseJobDescription } from "@/lib/job-parser";
 
 export async function POST(req: Request) {
   const session = await getSession();
@@ -74,17 +77,64 @@ export async function POST(req: Request) {
     },
   });
 
-  // Build the sourcing prompt
-  const jobTitle = job.title ? `Job Title: ${job.title}\n\n` : "";
-  const message =
-    `You are a recruitment sourcing agent. Find matching candidates on LinkedIn and HelloWork for the following job description.\n\n` +
-    `${jobTitle}Job Description:\n${job.rawContent}\n\n` +
-    `Search for candidates matching this profile and return a structured list with their details.`;
+  // Load user's tool credentials (LinkedIn, HelloWork)
+  const toolCredentials = await prisma.toolCredential.findMany({
+    where: { userId: session.id, isActive: true },
+    include: { tool: { select: { slug: true } } },
+  });
+
+  const credentialsMap: Record<string, { email: string; password: string }> = {};
+  for (const tc of toolCredentials) {
+    try {
+      const plain = JSON.parse(decrypt(tc.encryptedCredentials)) as {
+        email: string;
+        password: string;
+      };
+      credentialsMap[tc.tool.slug] = plain;
+    } catch {
+      // skip malformed credential
+    }
+  }
+
+  // Generate short-lived auth context (10 min TTL)
+  const authContextId = createAuthContext(session.id, credentialsMap);
+
+  // Parse job description into structured search params
+  let searchParams;
+  try {
+    searchParams = await parseJobDescription(job.rawContent);
+  } catch (err) {
+    console.error("[trigger] job parsing failed:", err);
+    // Fall back to job title only
+    searchParams = {
+      title: job.title ?? "Candidate",
+      location: null,
+      company: null,
+      keywords: [],
+    };
+  }
+
+  // Build structured message for OpenClaw
+  const messagePayload = {
+    task: "linkedin_search",
+    auth_context_id: authContextId,
+    search: {
+      title: searchParams.title,
+      ...(searchParams.location ? { location: searchParams.location } : {}),
+      ...(searchParams.company ? { company: searchParams.company } : {}),
+      keywords: searchParams.keywords,
+      limit: 25,
+    },
+    result_delivery: {
+      mode: "gateway_session",
+      sessionKey: run.id,
+    },
+  };
 
   // Trigger OpenClaw via WebSocket — mark failed if it throws
   try {
     await triggerAgentRun({
-      message,
+      message: JSON.stringify(messagePayload),
       sessionKey: run.id,
       onEvent: makeEventHandler(run.id, session.orgId),
     });
