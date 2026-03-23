@@ -65,7 +65,12 @@ npm run dev
 
 ## Integrations
 
-Users connect their LinkedIn account at `/integrations`. Credentials are AES-256 encrypted before storage. Bad credentials surface as an error in the sidebar during the first run — no connection test is performed at save time.
+Users connect their LinkedIn account at `/integrations` by providing their `li_at` session cookie
+(extracted from browser DevTools). This bypasses LinkedIn security checkpoints that trigger when
+logging in from a VPS IP. The cookie is AES-256 encrypted before storage and lasts ~1 year.
+
+A browser extension (Option A) is planned once LinkedIn OAuth approval is confirmed — it would
+capture the cookie automatically without the manual DevTools step.
 
 The tool permission chain:
 ```

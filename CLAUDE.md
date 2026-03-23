@@ -358,13 +358,37 @@ npx playwright install chromium --with-deps
 
 Flow:
 1. Launch Chromium with `--no-sandbox` (required on VPS)
-2. Log in at `https://www.linkedin.com/login` with stored credentials
+2. Load the user's `li_at` session cookie directly (no login step — avoids LinkedIn security checkpoints)
 3. Navigate to people search URL with combined `title + location + keywords` query
 4. Wait for `.reusable-search__result-container`, extract up to 25 profile cards
 5. Return `LinkedInCandidate[]` — always close browser in `finally`
 
-Throws `LinkedInAuthError` on bad credentials or security checkpoint.
+Throws `LinkedInAuthError` if the session cookie is expired or invalid (LinkedIn redirects to login).
 Returns `[]` (empty list) if search yields no results — does not throw.
+
+### 8.3 LinkedIn authentication strategy
+
+**Current: `li_at` session cookie (Option B)**
+
+Users provide their `li_at` LinkedIn session cookie directly. This cookie is extracted from their
+browser (DevTools → Application → Cookies → linkedin.com → `li_at`) and pasted into the
+integrations page. It lasts ~1 year and bypasses all login challenges / security checkpoints
+because LinkedIn sees it as an already-authenticated session.
+
+Credentials stored: `encrypt(JSON.stringify({ liAt: "<cookie value>" }))`.
+
+The integrations page replaces the email/password fields with a single `li_at` field and shows
+step-by-step instructions for extracting the cookie from Chrome/Firefox.
+
+**Future: Browser extension (Option A)**
+
+If LinkedIn approves the app via their Developer Platform (OAuth), switch to a Chrome extension:
+1. User clicks "Connect LinkedIn" in the app
+2. Extension reads `li_at` from the user's active LinkedIn session automatically
+3. Sends it to the app API — no manual copy-paste
+
+This eliminates the manual DevTools step and survives cookie rotation via a background refresh.
+Do not build until LinkedIn OAuth approval is confirmed.
 
 ### 8.3 SSE streaming
 
@@ -496,9 +520,14 @@ Enforce this check in `POST /api/integrations/[toolSlug]/credentials`.
 
 ### Credential save
 
-Credentials are marked `isActive: true` immediately on save. No connection test is performed at
-save time — real validation happens during the first agent run (a `LinkedInAuthError` will surface
-in the sidebar if credentials are wrong).
+For LinkedIn, the user provides their `li_at` session cookie (not email/password). The integrations
+page shows step-by-step instructions for extracting it from their browser.
+
+Stored as: `encrypt(JSON.stringify({ liAt: "<value>" }))`.
+
+Credentials are marked `isActive: true` immediately on save. No connection test is performed —
+real validation happens during the first agent run (`LinkedInAuthError` surfaces in the sidebar if
+the cookie is expired or invalid).
 
 ---
 
@@ -603,10 +632,13 @@ pm2 restart tagent --update-env
 ### Architectural decisions made
 - **Plan approval removed from MVP** — OpenClaw's sourcing agent never emitted a `paused` lifecycle event; scrapped rather than debugged.
 - **OpenClaw removed from sourcing hot path** — the sourcing agent had no `linkedin_search` tool registered, so it returned LLM-only responses with no real data. Replaced with direct Playwright scraping.
-- **No connection test on credential save** — the OpenClaw-based connection test always failed (agent had no tool to call). Credentials are now marked `isActive: true` on save; bad credentials surface as `LinkedInAuthError` during the first run.
+- **No connection test on credential save** — credentials are marked `isActive: true` on save; bad/expired cookies surface as `LinkedInAuthError` during the first run.
+- **`li_at` cookie instead of email/password** — fresh logins from the VPS IP triggered LinkedIn security checkpoints. Using the session cookie bypasses login entirely. See section 8.3 for full reasoning and the planned browser extension upgrade path.
 - **`lib/openclaw.ts` kept intact** — available for future use (e.g. post-scrape ranking/summarisation).
 
 ### Next steps
-1. **Test Playwright scraping** on the VPS — deploy current code, add LinkedIn credentials via `/integrations`, trigger a run, verify `AgentRun.results` contains real profiles.
-2. **Phase 7** — Billing (Stripe subscription, top-up, webhook handler, monthly reset cron).
-3. **Long term** — Nginx + HTTPS (phase 12) before any real users.
+1. **Update integrations page + scraper** for `li_at` cookie flow — replace email/password fields with a single cookie field + extraction instructions; update `scrapeLinkedIn()` to load the cookie instead of logging in.
+2. **Test Playwright scraping** end-to-end on the VPS with a real `li_at` cookie.
+3. **Phase 7** — Billing (Stripe subscription, top-up, webhook handler, monthly reset cron).
+4. **Long term** — Nginx + HTTPS (phase 12) before any real users.
+5. **Future** — Browser extension (Option A) once LinkedIn OAuth approval is confirmed (see section 8.3).
