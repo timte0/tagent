@@ -62,6 +62,7 @@ export async function scrapeLinkedIn(
 
     // Check if the cookie was invalid — LinkedIn redirects to login or checkpoint
     const url = page.url();
+    console.log("[linkedin scraper] landed on:", url);
     if (url.includes("/login") || url.includes("/checkpoint") || url.includes("/authwall")) {
       throw new LinkedInAuthError(
         "Session cookie is expired or invalid. Please update your li_at cookie in Integrations."
@@ -72,7 +73,10 @@ export async function scrapeLinkedIn(
     try {
       await page.waitForSelector(".reusable-search__result-container", { timeout: 20000 });
     } catch {
-      // No results found — return empty list rather than erroring
+      const pageTitle = await page.title();
+      const bodySnippet = await page.evaluate(() => document.body?.innerText?.slice(0, 500) ?? "");
+      console.log("[linkedin scraper] selector not found. page title:", pageTitle);
+      console.log("[linkedin scraper] body snippet:", bodySnippet);
       return [];
     }
 
